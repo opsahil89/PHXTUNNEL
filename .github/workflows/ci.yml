@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python
+        run: python -m py_compile setup.py
+      - name: Shell syntax
+        run: |
+          bash -n install.sh
+          bash -n scripts/healthcheck.sh
+          bash -n scripts/install-deps-debian.sh
+          bash -n scripts/status.sh
+          bash -n scripts/update.sh
+      - name: Validate example JSON
+        run: python -m json.tool configs/example-config.json >/dev/null

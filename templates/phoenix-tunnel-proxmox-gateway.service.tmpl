@@ -1,0 +1,13 @@
+[Unit]
+Description=UltraVM Phoenix Tunnel Proxmox VM bridge gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ip addr replace $gateway_cidr dev $bridge
+ExecStart=/usr/sbin/ip link set $bridge up
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

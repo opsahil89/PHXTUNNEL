@@ -1,0 +1,14 @@
+# Example cloud-init network for a VM routed through Phoenix Tunnel.
+network:
+  version: 2
+  ethernets:
+    ens18:
+      addresses:
+        - 172.16.50.10/24
+      routes:
+        - to: default
+          via: 172.16.50.1
+      nameservers:
+        addresses:
+          - 1.1.1.1
+          - 9.9.9.9

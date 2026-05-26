@@ -1,0 +1,13 @@
+#!/usr/sbin/nft -f
+table inet phoenix_tunnel {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+    udp dport 51820 dnat to 172.16.50.10:51820
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.100.0.0/24 oifname "eth0" masquerade
+    ip saddr 172.16.50.0/24 oifname "wg0" masquerade
+  }
+}

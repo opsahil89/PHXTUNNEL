@@ -1,0 +1,28 @@
+#!/usr/sbin/nft -f
+# UltraVM Phoenix Tunnel persistent firewall policy.
+
+table inet phoenix_tunnel {
+  chain input {
+    type filter hook input priority 0; policy accept;
+    udp dport $listen_port accept comment "phx tunnel WireGuard"
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy accept;
+    iifname "wg0" accept
+    oifname "wg0" accept
+$kill_switch_rules
+  }
+
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+$dnat_rules
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr $wg_subnet_v4 oifname "$outbound_interface" masquerade
+    ip saddr $wg_subnet_v4 oifname "wg0" masquerade
+$vm_masquerade
+  }
+}

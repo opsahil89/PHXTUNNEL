@@ -1,0 +1,14 @@
+services:
+  phoenix-tunnel:
+    image: debian:stable-slim
+    container_name: phoenix-tunnel-tools
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - ..:/opt/phoenix-tunnel:ro
+      - /etc/phoenix-tunnel:/etc/phoenix-tunnel
+      - /etc/wireguard:/etc/wireguard
+      - /var/lib/phoenix-tunnel:/var/lib/phoenix-tunnel
+    command: ["/bin/sh", "-lc", "apt-get update && apt-get install -y python3 wireguard-tools nftables qrencode && /opt/phoenix-tunnel/setup.py status"]

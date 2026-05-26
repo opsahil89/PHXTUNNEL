@@ -1,0 +1,38 @@
+{
+  "public_ip": "203.0.113.10",
+  "wg_subnet_v4": "10.100.0.0/24",
+  "wg_subnet_v6": "fd42:100::/64",
+  "listen_port": 51820,
+  "environment": "proxmox",
+  "bridge": "vmbr0",
+  "vm_subnet_v4": "172.16.50.0/24",
+  "vm_subnet_v6": "fd42:50::/64",
+  "outbound_interface": "eth0",
+  "dns": ["1.1.1.1", "9.9.9.9"],
+  "kill_switch": true,
+  "mtu": 1420,
+  "server_private_key": "replace-with-wg-genkey-output",
+  "server_public_key": "replace-with-wg-pubkey-output",
+  "peers": [
+    {
+      "name": "client-1",
+      "address_v4": "10.100.0.2",
+      "address_v6": "fd42:100::2",
+      "public_key": "replace-with-client-public-key",
+      "private_key": "replace-with-client-private-key",
+      "preshared_key": "replace-with-wg-genpsk-output",
+      "dns": ["1.1.1.1"]
+    }
+  ],
+  "port_mappings": [
+    {
+      "external_port": "51820",
+      "destination_ip": "172.16.50.10",
+      "destination_port": "51820",
+      "protocol": "udp"
+    }
+  ],
+  "firewall_backend": "nftables",
+  "tunnel_name": "phx tunnel",
+  "brand": "UltraVM"
+}

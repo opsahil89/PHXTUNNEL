@@ -1,0 +1,14 @@
+[
+  {
+    "external_port": "443",
+    "destination_ip": "172.16.50.10",
+    "destination_port": "443",
+    "protocol": "tcp"
+  },
+  {
+    "external_port": "8000-8010",
+    "destination_ip": "172.16.50.20",
+    "destination_port": "8000-8010",
+    "protocol": "both"
+  }
+]

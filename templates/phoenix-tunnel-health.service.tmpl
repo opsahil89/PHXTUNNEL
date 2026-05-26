@@ -1,0 +1,8 @@
+[Unit]
+Description=UltraVM Phoenix Tunnel health check
+
+[Service]
+Type=oneshot
+ExecStart=/opt/phoenix-tunnel/setup.py health
+StandardOutput=journal
+StandardError=journal
