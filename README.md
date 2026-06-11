@@ -11,7 +11,7 @@ same setup without networking jargon.
 ## One-Line Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ultravm/phoenix-tunnel/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/opsahil89/PHXTUNNEL/master/install.sh | sudo bash -s -- setup-proxy
 ```
 
 For local installs:
