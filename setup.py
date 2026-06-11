@@ -282,9 +282,9 @@ def first_host(network: str, offset: int) -> str:
 
 def parse_port_mappings() -> list[PortMapping]:
     mappings: list[PortMapping] = []
-    UI.info("Define forwarded/proxied ports. Leave external port empty when done.")
+    UI.info("Add public ports that should point to an internal VM or service. Press Enter when done.")
     while True:
-        external = input(UI.color("External port or range (example 443 or 8000-8010): ", UI.BOLD)).strip()
+        external = input(UI.color("Public port or range (example 443 or 8000-8010): ", UI.BOLD)).strip()
         if not external:
             break
         try:
@@ -292,8 +292,8 @@ def parse_port_mappings() -> list[PortMapping]:
         except Exception as exc:
             UI.warn(str(exc))
             continue
-        dest_ip = prompt(None, "Internal destination IP", lambda v: ipaddress.ip_address(v))
-        dest_port = prompt(external, "Internal destination port or range", validate_port)
+        dest_ip = prompt(None, "Internal VM/service IP", lambda v: ipaddress.ip_address(v))
+        dest_port = prompt(external, "Internal port or range", validate_port)
         protocol = prompt("both", "Protocol (tcp/udp/both)", lambda v: v.lower() in {"tcp", "udp", "both"} or (_ for _ in ()).throw(ValueError("Use tcp, udp, or both."))).lower()
         mappings.append(PortMapping(external, dest_ip, dest_port, protocol))
         if not yes_no("Add another port mapping?", False):
@@ -304,22 +304,22 @@ def parse_port_mappings() -> list[PortMapping]:
 def create_config(args: argparse.Namespace) -> PhoenixConfig:
     runner = Runner(dry_run=args.dry_run)
     banner()
-    public_ip = prompt(detect_public_ip(), "Public IP or DNS name of WireGuard proxy/server", validate_ip_or_host)
-    wg_subnet_v4 = prompt("10.100.0.0/24", "Internal WireGuard IPv4 subnet", validate_network)
-    wg_subnet_v6 = optional_network("fd42:100::/64", "Internal WireGuard IPv6 subnet")
+    public_ip = prompt(detect_public_ip(), "Server public IP or DNS name", validate_ip_or_host)
+    wg_subnet_v4 = prompt("10.100.0.0/24", "WireGuard private IPv4 network", validate_network)
+    wg_subnet_v6 = optional_network("fd42:100::/64", "WireGuard private IPv6 network")
     environment = prompt("linux", "Environment (linux/proxmox)", lambda v: v.lower() in {"linux", "proxmox"} or (_ for _ in ()).throw(ValueError("Use linux or proxmox."))).lower()
     listen_port = int(prompt("51820", "WireGuard listen port", validate_port))
-    outbound = prompt(detect_outbound_interface(), "Outbound internet interface")
-    dns_raw = prompt("1.1.1.1,9.9.9.9", "DNS servers for clients (comma-separated, blank to disable)")
-    kill_switch = yes_no("Enable kill-switch policy for forwarded traffic?", True)
+    outbound = prompt(detect_outbound_interface(), "Internet network interface")
+    dns_raw = prompt("1.1.1.1,9.9.9.9", "DNS servers for VPN clients")
+    kill_switch = yes_no("Block VM traffic if it cannot use the tunnel?", True)
     mtu = int(prompt("1420", "WireGuard MTU"))
     bridge = None
     vm_subnet_v4 = None
     vm_subnet_v6 = None
     if environment == "proxmox":
         bridge = choose_bridge()
-        vm_subnet_v4 = prompt("172.16.50.0/24", "Secondary internal VM IPv4 subnet", validate_network)
-        vm_subnet_v6 = optional_network("fd42:50::/64", "Secondary internal VM IPv6 subnet")
+        vm_subnet_v4 = prompt("172.16.50.0/24", "Private VM IPv4 network", validate_network)
+        vm_subnet_v6 = optional_network("fd42:50::/64", "Private VM IPv6 network")
     mappings = parse_port_mappings() if yes_no("Configure port forwarding now?", True) else []
     server_private, server_public = wg_keypair(runner)
     peer_private, peer_public = wg_keypair(runner)
@@ -356,7 +356,7 @@ def banner() -> None:
     print(UI.color(textwrap.dedent(f"""
         {BRAND} {APP_NAME}
         Tunnel name: {TUNNEL_NAME}
-        Self-hosted WireGuard proxy orchestration for Linux and Proxmox VE.
+        Simple self-hosted WireGuard tunneling for Linux and Proxmox VE.
     """).strip(), UI.BLUE))
 
 
@@ -439,8 +439,11 @@ def nft_rules(cfg: PhoenixConfig) -> str:
     dnat = []
     for mapping in cfg.port_mappings:
         protocols = ["tcp", "udp"] if mapping.protocol == "both" else [mapping.protocol]
+        dest = ipaddress.ip_address(mapping.destination_ip)
+        family = "ip6" if dest.version == 6 else "ip"
+        destination = f"[{mapping.destination_ip}]:{mapping.destination_port}" if dest.version == 6 else f"{mapping.destination_ip}:{mapping.destination_port}"
         for proto in protocols:
-            dnat.append(f"    {proto} dport {mapping.external_port} dnat to {mapping.destination_ip}:{mapping.destination_port}")
+            dnat.append(f"    {proto} dport {mapping.external_port} dnat {family} to {destination}")
     vm_masq = ""
     if cfg.environment == "proxmox" and cfg.vm_subnet_v4:
         vm_masq = f"    ip saddr {cfg.vm_subnet_v4} oifname \"wg0\" masquerade"

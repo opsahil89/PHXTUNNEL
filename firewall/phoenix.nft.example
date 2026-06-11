@@ -2,7 +2,7 @@
 table inet phoenix_tunnel {
   chain prerouting {
     type nat hook prerouting priority dstnat; policy accept;
-    udp dport 51820 dnat to 172.16.50.10:51820
+    udp dport 51820 dnat ip to 172.16.50.10:51820
   }
 
   chain postrouting {

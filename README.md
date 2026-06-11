@@ -5,6 +5,9 @@ proxy deployment platform for native Linux and Proxmox VE nodes. It provisions
 WireGuard, generates client configs, builds persistent NAT/DNAT firewall rules,
 and can turn a Proxmox host into a VM gateway/router.
 
+New to this? Start with [SIMPLE_GUIDE.md](SIMPLE_GUIDE.md). It explains the
+same setup without networking jargon.
+
 ## One-Line Installation
 
 ```bash
@@ -34,6 +37,7 @@ sudo ./install.sh
 phoenix-tunnel/
 +-- install.sh
 +-- setup.py
++-- SIMPLE_GUIDE.md
 +-- configs/
 +-- templates/
 +-- scripts/
