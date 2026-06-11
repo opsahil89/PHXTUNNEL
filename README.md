@@ -27,6 +27,7 @@ sudo ./install.sh
 - IPv4 and optional IPv6 addressing
 - nftables DNAT and masquerading rules
 - Proxmox bridge gateway service for VM subnets
+- Split proxy/backend setup for separate public proxy and private backend nodes
 - Client config export and optional QR generation
 - Health checks, status dashboard, rollback backups, and auto-update helper
 - Systemd services that survive reboot
@@ -99,10 +100,51 @@ Bridge:    vmbr0
 
 See `proxmox/vm-cloud-init.example.yaml` for a cloud-init example.
 
+## Split Proxy + Backend Setup
+
+Use this when the **proxy server has the public IP** and the **backend server or
+Proxmox node is private**.
+
+On the public proxy:
+
+```bash
+sudo ./setup.py setup-proxy
+```
+
+The proxy setup asks for the backend WireGuard public key. If you do not have
+one yet, press Enter and Phoenix Tunnel will generate a backend config at:
+
+```text
+/var/lib/phoenix-tunnel/backend/backend-wg0.conf
+```
+
+On the backend:
+
+```bash
+sudo ./setup.py setup-backend
+```
+
+The backend setup asks for the proxy WireGuard public key, which is printed at
+the end of the proxy setup.
+
+One-line public proxy install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opsahil89/PHXTUNNEL/master/install.sh | sudo bash -s -- setup-proxy
+```
+
+One-line backend install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opsahil89/PHXTUNNEL/master/install.sh | sudo bash -s -- setup-backend
+```
+
 ## Common Commands
 
 ```bash
 sudo ./setup.py install
+sudo ./setup.py setup-proxy
+sudo ./setup.py setup-backend
 sudo ./setup.py wizard
 sudo ./setup.py apply
 sudo ./setup.py status

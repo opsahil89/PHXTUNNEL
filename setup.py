@@ -144,6 +144,34 @@ class PhoenixConfig:
         return cls(**raw)
 
 
+@dataclasses.dataclass
+class SplitProxyConfig:
+    role: str
+    proxy_endpoint: str
+    wg_subnet_v4: str
+    listen_port: int
+    proxy_tunnel_ip: str
+    backend_tunnel_ip: str
+    private_key: str
+    public_key: str
+    peer_public_key: str
+    peer_private_key: str | None
+    preshared_key: str | None
+    mtu: int
+    dns: list[str]
+    outbound_interface: str
+    port_mappings: list[PortMapping]
+    environment: str = "linux"
+    bridge: str | None = None
+    vm_subnet_v4: str | None = None
+    kill_switch: bool = True
+    tunnel_name: str = TUNNEL_NAME
+    brand: str = BRAND
+
+    def to_json(self) -> str:
+        return json.dumps(dataclasses.asdict(self), indent=2)
+
+
 def prompt(default: str | None, label: str, validator=None) -> str:
     while True:
         suffix = f" [{default}]" if default else ""
@@ -301,6 +329,27 @@ def parse_port_mappings() -> list[PortMapping]:
     return mappings
 
 
+def parse_proxy_port_mappings(default_dest_ip: str) -> list[PortMapping]:
+    mappings: list[PortMapping] = []
+    UI.info("Add public proxy ports. They will forward through WireGuard to the backend.")
+    while True:
+        external = input(UI.color("Public proxy port or range (example 443 or 8000-8010): ", UI.BOLD)).strip()
+        if not external:
+            break
+        try:
+            validate_port(external)
+        except Exception as exc:
+            UI.warn(str(exc))
+            continue
+        dest_ip = prompt(default_dest_ip, "Backend WireGuard IP", lambda v: ipaddress.ip_address(v))
+        dest_port = prompt(external, "Backend port or range", validate_port)
+        protocol = prompt("both", "Protocol (tcp/udp/both)", lambda v: v.lower() in {"tcp", "udp", "both"} or (_ for _ in ()).throw(ValueError("Use tcp, udp, or both."))).lower()
+        mappings.append(PortMapping(external, dest_ip, dest_port, protocol))
+        if not yes_no("Add another proxy port?", False):
+            break
+    return mappings
+
+
 def create_config(args: argparse.Namespace) -> PhoenixConfig:
     runner = Runner(dry_run=args.dry_run)
     banner()
@@ -368,7 +417,7 @@ def render_template(name: str, values: dict[str, Any]) -> str:
 def install_runtime_files() -> None:
     target = Path("/opt/phoenix-tunnel")
     target.mkdir(parents=True, exist_ok=True)
-    for name in ["setup.py", "install.sh"]:
+    for name in ["setup.py", "install.sh", "README.md", "SIMPLE_GUIDE.md"]:
         shutil.copy2(REPO_ROOT / name, target / name)
     for directory in ["templates", "scripts", "configs", "wireguard", "firewall", "proxmox", "docker"]:
         src = REPO_ROOT / directory
@@ -433,6 +482,116 @@ def client_config(cfg: PhoenixConfig, peer: ClientPeer) -> str:
         "allowed_ips": ", ".join(allowed),
         "mtu": cfg.mtu,
     })
+
+
+def split_proxy_wg0(cfg: SplitProxyConfig) -> str:
+    peer_lines = [
+        "[Peer]",
+        "# backend server",
+        f"PublicKey = {cfg.peer_public_key}",
+        f"AllowedIPs = {cfg.backend_tunnel_ip}/32",
+    ]
+    if cfg.preshared_key:
+        peer_lines.append(f"PresharedKey = {cfg.preshared_key}")
+    return "\n".join([
+        "# UltraVM Phoenix Tunnel split proxy",
+        "[Interface]",
+        f"Address = {cfg.proxy_tunnel_ip}/{ipaddress.ip_network(cfg.wg_subnet_v4, strict=False).prefixlen}",
+        f"ListenPort = {cfg.listen_port}",
+        f"PrivateKey = {cfg.private_key}",
+        f"MTU = {cfg.mtu}",
+        "SaveConfig = false",
+        "",
+        "\n".join(peer_lines),
+        "",
+    ])
+
+
+def split_backend_wg0(cfg: SplitProxyConfig) -> str:
+    dns_line = f"DNS = {', '.join(cfg.dns)}" if cfg.dns else ""
+    psk_line = f"PresharedKey = {cfg.preshared_key}" if cfg.preshared_key else ""
+    return "\n".join([
+        "# UltraVM Phoenix Tunnel backend connector",
+        "[Interface]",
+        f"Address = {cfg.backend_tunnel_ip}/{ipaddress.ip_network(cfg.wg_subnet_v4, strict=False).prefixlen}",
+        f"PrivateKey = {cfg.private_key}",
+        f"MTU = {cfg.mtu}",
+        dns_line,
+        "",
+        "[Peer]",
+        "# public proxy",
+        f"PublicKey = {cfg.peer_public_key}",
+        psk_line,
+        f"Endpoint = {cfg.proxy_endpoint}:{cfg.listen_port}",
+        "AllowedIPs = 0.0.0.0/0",
+        "PersistentKeepalive = 25",
+        "",
+    ])
+
+
+def split_proxy_nft(cfg: SplitProxyConfig) -> str:
+    dnat = []
+    for mapping in cfg.port_mappings:
+        protocols = ["tcp", "udp"] if mapping.protocol == "both" else [mapping.protocol]
+        dest = ipaddress.ip_address(mapping.destination_ip)
+        family = "ip6" if dest.version == 6 else "ip"
+        destination = f"[{mapping.destination_ip}]:{mapping.destination_port}" if dest.version == 6 else f"{mapping.destination_ip}:{mapping.destination_port}"
+        for proto in protocols:
+            dnat.append(f"    {proto} dport {mapping.external_port} dnat {family} to {destination}")
+    return "\n".join([
+        "#!/usr/sbin/nft -f",
+        "# UltraVM Phoenix Tunnel split proxy firewall.",
+        "table inet phoenix_tunnel {",
+        "  chain input {",
+        "    type filter hook input priority 0; policy accept;",
+        f"    udp dport {cfg.listen_port} accept comment \"phx tunnel WireGuard\"",
+        "  }",
+        "",
+        "  chain forward {",
+        "    type filter hook forward priority 0; policy accept;",
+        "    iifname \"wg0\" accept",
+        "    oifname \"wg0\" accept",
+        "  }",
+        "",
+        "  chain prerouting {",
+        "    type nat hook prerouting priority dstnat; policy accept;",
+        "\n".join(dnat) if dnat else "    # no proxy DNAT mappings configured",
+        "  }",
+        "",
+        "  chain postrouting {",
+        "    type nat hook postrouting priority srcnat; policy accept;",
+        f"    ip saddr {cfg.wg_subnet_v4} oifname \"{cfg.outbound_interface}\" masquerade",
+        "  }",
+        "}",
+        "",
+    ])
+
+
+def split_backend_nft(cfg: SplitProxyConfig) -> str:
+    vm_rules: list[str] = []
+    postrouting: list[str] = []
+    if cfg.environment == "proxmox" and cfg.vm_subnet_v4:
+        postrouting.append(f"    ip saddr {cfg.vm_subnet_v4} oifname \"wg0\" masquerade")
+        if cfg.kill_switch:
+            vm_rules.append(f"    ip saddr {cfg.vm_subnet_v4} oifname != \"wg0\" drop comment \"phx tunnel backend kill-switch\"")
+    return "\n".join([
+        "#!/usr/sbin/nft -f",
+        "# UltraVM Phoenix Tunnel backend firewall.",
+        "table inet phoenix_tunnel {",
+        "  chain forward {",
+        "    type filter hook forward priority 0; policy accept;",
+        "    iifname \"wg0\" accept",
+        "    oifname \"wg0\" accept",
+        "\n".join(vm_rules) if vm_rules else "    # no VM kill-switch rules configured",
+        "  }",
+        "",
+        "  chain postrouting {",
+        "    type nat hook postrouting priority srcnat; policy accept;",
+        "\n".join(postrouting) if postrouting else "    # no backend masquerade rules configured",
+        "  }",
+        "}",
+        "",
+    ])
 
 
 def nft_rules(cfg: PhoenixConfig) -> str:
@@ -516,6 +675,159 @@ def apply_system(cfg: PhoenixConfig, runner: Runner) -> None:
     runner.run(["systemctl", "enable", "--now", "phoenix-tunnel-health.timer"], check=False)
 
 
+def create_split_proxy_config(args: argparse.Namespace) -> SplitProxyConfig:
+    runner = Runner(dry_run=args.dry_run)
+    banner()
+    UI.info("Proxy setup: run this on the server that has the public IP.")
+    proxy_endpoint = prompt(detect_public_ip(), "Proxy public IP or DNS name", validate_ip_or_host)
+    wg_subnet_v4 = prompt("10.200.0.0/24", "Private tunnel network between proxy and backend", validate_network)
+    listen_port = int(prompt("51820", "Proxy WireGuard listen port", validate_port))
+    outbound = prompt(detect_outbound_interface(), "Proxy internet network interface")
+    mtu = int(prompt("1420", "WireGuard MTU"))
+    proxy_private, proxy_public = wg_keypair(runner)
+    backend_public = input(UI.color("Backend WireGuard public key (press Enter to generate backend config too): ", UI.BOLD)).strip()
+    backend_private = None
+    if not backend_public:
+        backend_private, backend_public = wg_keypair(runner)
+        UI.ok("Generated backend keypair. Copy the exported backend config to the backend server.")
+    psk = preshared_key(runner)
+    proxy_ip = first_host(wg_subnet_v4, 0)
+    backend_ip = first_host(wg_subnet_v4, 1)
+    mappings = parse_proxy_port_mappings(backend_ip) if yes_no("Forward public ports to the backend?", True) else []
+    return SplitProxyConfig(
+        role="proxy",
+        proxy_endpoint=proxy_endpoint,
+        wg_subnet_v4=wg_subnet_v4,
+        listen_port=listen_port,
+        proxy_tunnel_ip=proxy_ip,
+        backend_tunnel_ip=backend_ip,
+        private_key=proxy_private,
+        public_key=proxy_public,
+        peer_public_key=backend_public,
+        peer_private_key=backend_private,
+        preshared_key=psk,
+        mtu=mtu,
+        dns=[],
+        outbound_interface=outbound,
+        port_mappings=mappings,
+    )
+
+
+def create_split_backend_config(args: argparse.Namespace) -> SplitProxyConfig:
+    runner = Runner(dry_run=args.dry_run)
+    banner()
+    UI.info("Backend setup: run this on the private backend server or Proxmox node.")
+    proxy_endpoint = prompt(None, "Proxy public IP or DNS name", validate_ip_or_host)
+    proxy_public = prompt(None, "Proxy WireGuard public key")
+    wg_subnet_v4 = prompt("10.200.0.0/24", "Private tunnel network used by the proxy", validate_network)
+    listen_port = int(prompt("51820", "Proxy WireGuard listen port", validate_port))
+    proxy_ip = prompt(first_host(wg_subnet_v4, 0), "Proxy tunnel IP", lambda v: ipaddress.ip_address(v))
+    backend_ip = prompt(first_host(wg_subnet_v4, 1), "This backend tunnel IP", lambda v: ipaddress.ip_address(v))
+    backend_private, backend_public = wg_keypair(runner)
+    psk = input(UI.color("Preshared key from proxy setup (blank to skip): ", UI.BOLD)).strip() or None
+    dns_raw = prompt("1.1.1.1,9.9.9.9", "DNS servers for backend/VM traffic")
+    mtu = int(prompt("1420", "WireGuard MTU"))
+    environment = prompt("linux", "Backend type (linux/proxmox)", lambda v: v.lower() in {"linux", "proxmox"} or (_ for _ in ()).throw(ValueError("Use linux or proxmox."))).lower()
+    bridge = None
+    vm_subnet_v4 = None
+    kill_switch = True
+    if environment == "proxmox":
+        bridge = choose_bridge()
+        vm_subnet_v4 = prompt("172.16.50.0/24", "Private VM IPv4 network", validate_network)
+        kill_switch = yes_no("Block VM traffic if it cannot use the proxy tunnel?", True)
+    UI.ok(f"Backend public key: {backend_public}")
+    UI.info("Add this backend public key to the proxy setup when asked.")
+    return SplitProxyConfig(
+        role="backend",
+        proxy_endpoint=proxy_endpoint,
+        wg_subnet_v4=wg_subnet_v4,
+        listen_port=listen_port,
+        proxy_tunnel_ip=proxy_ip,
+        backend_tunnel_ip=backend_ip,
+        private_key=backend_private,
+        public_key=backend_public,
+        peer_public_key=proxy_public,
+        peer_private_key=None,
+        preshared_key=psk,
+        mtu=mtu,
+        dns=[x.strip() for x in dns_raw.split(",") if x.strip()],
+        outbound_interface=detect_outbound_interface(),
+        port_mappings=[],
+        environment=environment,
+        bridge=bridge,
+        vm_subnet_v4=vm_subnet_v4,
+        kill_switch=kill_switch,
+    )
+
+
+def write_split_proxy_files(cfg: SplitProxyConfig) -> None:
+    write_file(CONFIG_DIR / "proxy.json", cfg.to_json(), 0o600)
+    write_file(WG_DIR / "wg0.conf", split_proxy_wg0(cfg), 0o600)
+    write_file(CONFIG_DIR / "phoenix.nft", split_proxy_nft(cfg), 0o600)
+    write_file(SYSTEMD_DIR / "phoenix-tunnel-firewall.service", render_template("phoenix-tunnel-firewall.service.tmpl", {}), 0o644)
+    if cfg.peer_private_key:
+        backend_cfg = dataclasses.replace(
+            cfg,
+            role="backend",
+            private_key=cfg.peer_private_key,
+            public_key=cfg.peer_public_key,
+            peer_public_key=cfg.public_key,
+            peer_private_key=None,
+            port_mappings=[],
+        )
+        write_file(STATE_DIR / "backend" / "backend-wg0.conf", split_backend_wg0(backend_cfg), 0o600)
+
+
+def write_split_backend_files(cfg: SplitProxyConfig) -> None:
+    write_file(CONFIG_DIR / "backend.json", cfg.to_json(), 0o600)
+    write_file(WG_DIR / "wg0.conf", split_backend_wg0(cfg), 0o600)
+    write_file(CONFIG_DIR / "phoenix.nft", split_backend_nft(cfg), 0o600)
+    write_file(SYSTEMD_DIR / "phoenix-tunnel-firewall.service", render_template("phoenix-tunnel-firewall.service.tmpl", {}), 0o644)
+    if cfg.environment == "proxmox" and cfg.bridge and cfg.vm_subnet_v4:
+        gateway = first_host(cfg.vm_subnet_v4, 0)
+        prefix = ipaddress.ip_network(cfg.vm_subnet_v4, strict=False).prefixlen
+        write_file(SYSTEMD_DIR / "phoenix-tunnel-proxmox-gateway.service", render_template("phoenix-tunnel-proxmox-gateway.service.tmpl", {
+            "bridge": cfg.bridge,
+            "gateway_cidr": f"{gateway}/{prefix}",
+        }), 0o644)
+
+
+def apply_split_proxy(cfg: SplitProxyConfig, runner: Runner) -> None:
+    if runner.dry_run:
+        print(split_proxy_wg0(cfg))
+        print(split_proxy_nft(cfg))
+        return
+    install_runtime_files()
+    write_split_proxy_files(cfg)
+    runner.run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    write_file(Path("/etc/sysctl.d/99-phoenix-tunnel.conf"), render_template("99-phoenix-tunnel.conf.tmpl", {}), 0o644)
+    if shutil.which("nft"):
+        runner.run(["nft", "-f", str(CONFIG_DIR / "phoenix.nft")])
+    runner.run(["systemctl", "daemon-reload"], check=False)
+    runner.run(["systemctl", "enable", "--now", "wg-quick@wg0"], check=False)
+    runner.run(["systemctl", "enable", "--now", "phoenix-tunnel-firewall.service"], check=False)
+    if cfg.peer_private_key:
+        UI.ok("Backend WireGuard config exported to /var/lib/phoenix-tunnel/backend/backend-wg0.conf")
+
+
+def apply_split_backend(cfg: SplitProxyConfig, runner: Runner) -> None:
+    if runner.dry_run:
+        print(split_backend_wg0(cfg))
+        print(split_backend_nft(cfg))
+        return
+    install_runtime_files()
+    write_split_backend_files(cfg)
+    runner.run(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    write_file(Path("/etc/sysctl.d/99-phoenix-tunnel.conf"), render_template("99-phoenix-tunnel.conf.tmpl", {}), 0o644)
+    if shutil.which("nft"):
+        runner.run(["nft", "-f", str(CONFIG_DIR / "phoenix.nft")])
+    runner.run(["systemctl", "daemon-reload"], check=False)
+    runner.run(["systemctl", "enable", "--now", "wg-quick@wg0"], check=False)
+    runner.run(["systemctl", "enable", "--now", "phoenix-tunnel-firewall.service"], check=False)
+    if cfg.environment == "proxmox":
+        runner.run(["systemctl", "enable", "--now", "phoenix-tunnel-proxmox-gateway.service"], check=False)
+
+
 def health(cfg: PhoenixConfig) -> int:
     checks = {
         "config": DEFAULT_CONFIG.exists(),
@@ -590,6 +902,8 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("install", help="Run interactive wizard and apply configuration")
     sub.add_parser("wizard", help="Run interactive wizard and write generated files")
+    sub.add_parser("setup-proxy", help="Set up the public-IP proxy server for a split deployment")
+    sub.add_parser("setup-backend", help="Set up the private backend or Proxmox node for a split deployment")
     sub.add_parser("apply", help="Apply existing /etc/phoenix-tunnel/config.json")
     sub.add_parser("status", help="Show dashboard")
     sub.add_parser("health", help="Run health checks")
@@ -608,6 +922,21 @@ def main(argv: list[str]) -> int:
         else:
             generate_files(cfg)
         UI.ok(f"{APP_NAME} generated successfully.")
+        return 0
+    if command == "setup-proxy":
+        cfg = create_split_proxy_config(args)
+        apply_split_proxy(cfg, runner)
+        UI.ok("Public proxy setup complete.")
+        print(f"Proxy WireGuard public key: {cfg.public_key}")
+        if cfg.peer_private_key:
+            print("Copy /var/lib/phoenix-tunnel/backend/backend-wg0.conf to the backend server as /etc/wireguard/wg0.conf.")
+        return 0
+    if command == "setup-backend":
+        cfg = create_split_backend_config(args)
+        apply_split_backend(cfg, runner)
+        UI.ok("Backend setup complete.")
+        print(f"Backend WireGuard public key: {cfg.public_key}")
+        print("Add this backend public key to the proxy setup if the proxy was not generated with backend keys.")
         return 0
     if command == "apply":
         apply_system(PhoenixConfig.from_file(), runner)

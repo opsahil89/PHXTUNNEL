@@ -19,6 +19,44 @@ Pick `linux` if Phoenix Tunnel is running on a normal VPS or dedicated server.
 Pick `proxmox` if Phoenix Tunnel is running directly on a Proxmox VE host and
 you want VMs behind it.
 
+Pick the split setup if you have two machines:
+
+- `setup-proxy` runs on the public-IP proxy.
+- `setup-backend` runs on the private backend or Proxmox node.
+
+## Two-Device Setup
+
+Use this when the proxy has the public IP and the backend server is separate.
+
+On the public proxy:
+
+```bash
+sudo ./setup.py setup-proxy
+```
+
+The proxy setup asks for the backend WireGuard public key. If you do not have
+one yet, press Enter. Phoenix Tunnel will generate a backend config for you at:
+
+```text
+/var/lib/phoenix-tunnel/backend/backend-wg0.conf
+```
+
+On the backend server:
+
+```bash
+sudo ./setup.py setup-backend
+```
+
+The backend setup asks for the proxy WireGuard public key. The proxy prints it
+at the end of `setup-proxy`.
+
+Single-line examples:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opsahil89/PHXTUNNEL/master/install.sh | sudo bash -s -- setup-proxy
+curl -fsSL https://raw.githubusercontent.com/opsahil89/PHXTUNNEL/master/install.sh | sudo bash -s -- setup-backend
+```
+
 ## Simple Proxmox Example
 
 Use these values if you are unsure:
