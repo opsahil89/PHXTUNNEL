@@ -28,4 +28,10 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exit 1
 fi
 
-exec "$PYTHON_BIN" "$PHX_ROOT/setup.py" "$@"
+if [[ -r /dev/tty ]]; then
+  exec "$PYTHON_BIN" "$PHX_ROOT/setup.py" "$@" </dev/tty
+fi
+
+echo "Phoenix Tunnel needs an interactive terminal for setup." >&2
+echo "Clone the repository and run: sudo ./install.sh $*" >&2
+exit 1
